@@ -1,0 +1,846 @@
+pragma solidity ^0.4.24;
+
+/**
+ * @title Ownable
+ * @dev The Ownable contract has an owner address, and provides basic authorization control
+ * functions, this simplifies the implementation of "user permissions".
+ */
+contract Ownable {
+
+  address public owner;
+  address private nextOwner;
+
+  /**
+   * @dev The Ownable constructor sets the original `owner` of the contract to the sender
+   * account.
+   */
+  constructor() public {
+    owner = msg.sender;
+  }
+
+
+  /**
+   * @dev Throws if called by any account other than the owner.
+   */
+  modifier onlyOwner() {
+    require(msg.sender == owner);
+    _;
+  }
+
+
+  /**
+   * @dev Allows the current owner to transfer control of the contract to a newOwner.
+   * @param newOwner The address to transfer ownership to.
+   */
+  function transferOwnership(address newOwner) external onlyOwner {
+    if (newOwner != address(0)) {
+      owner = newOwner;
+      nextOwner = newOwner;
+    }
+  }
+
+  // Standard contract ownership transfer implementation,
+  function approveOwnership(address _nextOwner) external onlyOwner {
+    require (_nextOwner != owner, "Cannot approve current owner.");
+    nextOwner = _nextOwner;
+  }
+
+  function acceptOwnership() external {
+    require (msg.sender == nextOwner, "Can only accept preapproved new owner.");
+    owner = nextOwner;
+  }
+
+}
+
+contract TokenERC20 {
+    
+    // Public variables of the token
+    string public name = "Bit Diamond Coin";
+    string public symbol = "BDC";
+    uint8 public decimals = 18;
+    // 18 decimals is the strongly suggested default, avoid changing it
+    uint256 public totalSupply = 0;
+    uint256 public playerSupply = 0;
+    uint256 public gameSupply = 0;
+
+    // This creates an array with all balances
+    mapping (address => uint256) public balanceOf;
+
+    // This generates a public event on the blockchain that will notify clients
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * Constructor function
+     *
+     * Initializes contract with initial supply tokens to the creator of the contract
+     */
+    constructor(
+        //
+    ) public {
+        //
+    }
+
+    /**
+     * Internal transfer, only can be called by this contract
+     */
+    function _transfer(address _from, address _to, uint _value) internal {
+        // Prevent transfer to 0x0 address. Use burn() instead
+        require(_to != 0x0);
+        // Check if the sender has enough
+        require(balanceOf[_from] >= _value);
+        // Check for overflows
+        require(balanceOf[_to] + _value > balanceOf[_to]);
+        // Save this for an assertion in the future
+        uint previousBalances = balanceOf[_from] + balanceOf[_to];
+        // Subtract from the sender
+        balanceOf[_from] -= _value;
+        // Add the same to the recipient
+        balanceOf[_to] += _value;
+        emit Transfer(_from, _to, _value);
+        // Asserts are used to use static analysis to find bugs in your code. They should never fail
+        assert(balanceOf[_from] + balanceOf[_to] == previousBalances);
+    }
+
+    /**
+     * Transfer tokens
+     *
+     * Send `_value` tokens to `_to` from your account
+     *
+     * @param _to The address of the recipient
+     * @param _value the amount to send
+     */
+    function transfer(address _to, uint256 _value) public {
+        _transfer(msg.sender, _to, _value);
+    }
+
+}
+
+contract BitDiamondCoin is Ownable, TokenERC20 {
+    
+    /*** EVENTS ***/
+
+    // Create a game
+    event Create(address indexed owner, uint256 indexed gameId, uint256 credit);
+    
+    // Converting the main coin into diamond/token is equivalent to charging.
+    event Purchase(address indexed player, uint256 diamond);
+
+    // The act of changing a diamond into a main coin is equal to the act of withdrawing money.
+    event Withdraw(address indexed player, uint256 diamond);
+
+    // Converting diamonds into gold coins/chips of the specified game ID, once converted into gold coins, 
+    // equals putting them into the game, the game dealer will settle your remaining gold coins.
+    event Exchange(uint256 indexed gameId, address indexed player, uint256 diamond, uint256 gold);
+    
+    // Settles the number of gold coins of a user in the specified game ID and converts the specified gold coins into diamonds.
+    event Settle(uint256 indexed gameId, address indexed player, uint256 balance, int256 change, uint256 diamond, uint256 gold, uint256 fee);
+    
+    // Send the main coin to the designated game ID, fill the gold coin as the reserve, 
+    // record how many diamonds are filled, and convert it into the reserve gold coin.
+    event Charge(uint256 indexed gameId, uint256 diamond, uint256 gold);
+
+    // Specify the game ID to withdraw the reserve money, extract the designated gold coins, 
+    // and the number of diamonds converted, and finally return the corresponding main currency to the account.
+    event Refund(uint256 indexed gameId, uint256 diamond, uint256 gold);
+
+    //Send the main currency to the specified address.
+    event Send(address indexed beneficiary, uint amount);
+
+
+    /*** DATA TYPES ***/
+    
+    /// @dev The main game struct. Every game in CryptoKitties is represented by a copy
+    ///  of this structure, so great care was taken to ensure that it fits neatly into
+    ///  exactly two 256-bit words. Note that the order of the members in this structure
+    ///  is important because of the byte-packing rules used by Ethereum.
+    ///  Ref: http://solidity.readthedocs.io/en/develop/miscellaneous.html
+    struct Game {
+        // Game administrators are responsible for the recharge or withdrawal of reserve gold, 
+        // the settlement of players'gold coins and the exchange of gold coins to diamonds.
+        address owner;
+        // The game' name
+        string  name;
+        // The game's website
+        string website;
+        
+        // Publishers issue gold coins based on the number of players'diamonds converted into gold coins and the amount of diamonds/gold coins that the administrator reserves.
+        // If the gold coin is converted into diamonds and the administrator returns the reserve diamond/gold coin, the amount should also be deducted accordingly.
+        // The game's diamond total exchange quantity
+        uint256 totalDiamond;
+        // The palyer's diamond total exchange quantity
+        uint256 playerDiamond;
+        // The game's owner charge total diamond quantity for fund
+        uint256 diamondFund;
+        
+        // The game's gold total issue quantity
+        uint256 totalGold;
+        // All players in the current game are converted into gold coins.
+        uint256 playerGold;
+        // Total Procedure Fee for Diamond Exchange by All Players of the Current Game
+        //uint256 playerFee;
+        // Game Standby Gold Coin
+        uint256 goldFund;
+        // Gamer Credit Line by diamond
+        uint256 lineOfCredit;
+        
+        bool isAavailable;
+        
+        // Number of Gold Coins in Player Game
+        mapping (address => uint256) balanceOf;
+        
+        // Game creation time
+        uint64 createTime;
+
+    }
+
+    /*** STORAGE ***/
+
+    /// @dev An array containing the Kitty struct for all Kitties in existence. The ID
+    ///  of each cat is actually an index into this array. Note that ID 0 is a negacat,
+    ///  the unKitty, the mythical beast that is the parent of all gen0 cats. A bizarre
+    ///  creature that is both matron and sire... to itself! Has an invalid genetic code.
+    ///  In other words, cat ID 0 is invalid... ;-)
+    Game[] public games;
+    
+
+    /// @dev A mapping from cat IDs to the address that owns them. All cats have
+    ///  some valid owner address, even gen0 cats are created with a non-zero owner.
+    mapping (uint256 => address) public gameIndexToOwner;
+    mapping (uint256 => address) private gameIndexToNextOwner;
+
+
+    /*** CONSTANTS ***/
+
+    uint256 public constant STARTUP_CREDIT_MIN = 10000;
+    
+    uint256 public constant RATE_ETH_DIAMOND = 10;
+    uint256 public constant RATE_DIAMOND_GOLD = 10000;
+    uint256 public constant SETTLE_GOLD_MIN = 1*10000*10**18;//Simplify
+    uint256 public constant SETTLE_GOLD_MAX = 100000*10000*10**18;//Simplify
+    // Each bet is deducted 1% in favour of the house, but no less than some minimum.
+    // The lower bound is dictated by gas costs of the settleBet transaction, providing
+    // headroom for up to 10 Gwei prices.
+    uint constant HOUSE_EDGE_PERCENT = 2;
+    uint constant HOUSE_EDGE_MIN_AMOUNT = 2000*10**18;
+    uint constant GAME_EDGE_PERCENT = 1;
+    uint constant GAME_EDGE_MIN_AMOUNT = 1000*10**18;
+
+    /**
+     * Constructor function
+     *
+     * Initializes contract with initial supply tokens to the creator of the contract
+     */
+    constructor(
+        //
+    ) public {
+        _createGame(owner, "Bit Diamond Coin (BDC)", "http://www.bitdiamondcoin.com", 100*10**18);
+    }
+    
+    /// @dev Access modifier for Game-Owner-only functionality
+    modifier onlyGameOwner(uint256 _gameId){
+        require(msg.sender == gameIndexToOwner[_gameId], "You are not the game owner.");
+        require(_gameId < games.length, "The game is not exist.");
+        _;
+    }
+
+    /// @dev Access modifier for Game-Exit-only functionality
+    modifier whenGameExist(uint256 _gameId){
+        require(_gameId < games.length, "The game is not exist.");
+        _;
+    }
+
+    /// @dev Access modifier for whenGameStartup functionality
+    modifier whenGameStartup(uint256 _gameId){
+        require(_gameId < games.length, "The game is not exist.");
+        Game storage _game = games[_gameId];
+        require(_game.diamondFund >= _game.lineOfCredit,"The game is not startup yet, please charge enough.");
+        _;
+    }
+
+    /// @dev Access modifier for whenGameAvailable functionality
+    modifier whenGameAvailable(uint256 _gameId){
+        require(_gameId < games.length, "The game is not exist.");
+        Game storage _game = games[_gameId];
+        require(_game.diamondFund >= _game.lineOfCredit,"The game is not startup yet, please charge enough.");
+        require(_game.isAavailable,"The game is not available.");
+        _;
+    }
+
+    /// @dev  balance of diamond and gold
+    modifier meetDiamondGod(uint256 _diamond, uint256 _gold){
+        require(_diamond * RATE_DIAMOND_GOLD == _gold, "Then balance of diamond and gold is not meet.");
+        _;
+    }
+
+    // Directly transfer ownership
+    function transferGameOwner(uint256 _gameId, address newOwner) external onlyGameOwner(_gameId) {
+        
+        if (newOwner != address(0)) {
+            
+            Game storage _game = games[_gameId];
+            
+            gameIndexToNextOwner[_gameId] = newOwner;
+            gameIndexToOwner[_gameId] = newOwner;
+            _game.owner = newOwner;
+        }
+    }
+    
+    // Standard contract ownership transfer implementation,
+    function approveGameOwner(uint256 _gameId, address _nextOwner) external onlyGameOwner(_gameId) {
+        
+        gameIndexToNextOwner[_gameId] = _nextOwner;
+        
+    }
+
+    // Safty method
+    function acceptGameOwner(uint256 _gameId) external whenGameExist(_gameId){
+        
+        require(msg.sender == gameIndexToNextOwner[_gameId], "Can only accept preapproved new owner.");
+        
+        Game storage _game = games[_gameId];
+
+        gameIndexToOwner[_gameId] = gameIndexToNextOwner[_gameId];
+        _game.owner = gameIndexToNextOwner[_gameId];
+    }
+    
+    /**
+     * Check player gold amount in the Ggame.
+     * Query the number of gold coins that the player last updated in this game.
+     */
+    function balanceGameOf(
+        uint256 _gameId,
+        address _player
+        ) 
+        external 
+        view
+        whenGameExist(_gameId)
+        returns(uint256 _balance)
+    {
+        // Check if the games is exist
+        //require(_gameId < games.length);
+        
+        Game storage _game = games[_gameId];
+        
+        _balance = _game.balanceOf[_player];
+    }
+     
+
+    /**
+     * Internal createGame, only can be called by this contract
+     */
+    function _createGame(
+        address _owner,
+        string _name,
+        string _website,
+        uint256 _credit
+    )
+        internal
+        returns (uint)
+    {
+        // These requires are not strictly necessary, our calling code should make
+        // sure that these conditions are never broken. However! _createGame() is already
+        // an expensive call (for storage), and it doesn't hurt to be especially careful
+        // to ensure our data structures are always valid.
+        require(_credit == uint256(uint256(_credit)));
+        // The name cann't be empty
+        require(bytes(_name).length > 0);
+
+        Game memory _game = Game({
+            owner: _owner,
+            name: _name,
+            website: _website,
+            totalDiamond: uint256(0),
+            playerDiamond: uint256(0),
+            diamondFund: uint256(0),
+            totalGold: uint256(0),
+            playerGold: uint256(0),
+            //playerFee: uint256(0),
+            isAavailable: true,
+            goldFund: uint256(0),
+            lineOfCredit: _credit,
+            createTime: uint64(now)
+        });
+        
+        uint256 gameId = games.push(_game) - 1;
+
+        // It's probably never going to happen, 4 billion games is A LOT, but
+        // let's just be 100% sure we never let this happen.
+        require(gameId == uint256(uint64(gameId)));
+        
+        gameIndexToOwner[gameId]=_owner;
+
+        // emit the birth event
+        emit Create(_owner,gameId,_credit);
+
+        return gameId;
+    }
+
+    /**
+     * Create a game and publisher information.
+     * Calls are initiated only by the owner of the smart contract.
+     */
+    function startupGame(
+        string _name,
+        string _website,
+        uint256 _creditNum
+        )
+        onlyOwner 
+        external
+        payable
+        returns(uint256)
+    {
+        require(_creditNum >= STARTUP_CREDIT_MIN,"The credit amount cann't less than credit min.");
+        
+        uint256 _diamond = msg.value * RATE_ETH_DIAMOND; 
+        uint256 _gold = _diamond * RATE_DIAMOND_GOLD; 
+        uint256 _credit = _creditNum*10**18;
+        require(_diamond == _credit, "The startup diamond fund is not meet credit amount");
+        
+        uint256 _gameId = _createGame(msg.sender, _name, _website, _credit);
+        
+        _charge(_gameId,_diamond,_gold);
+        
+        return _gameId;
+    }
+
+    /**
+     * Create a game and publisher information.
+     * Calls are initiated only by the owner of the smart contract.
+     */
+    function createGame(
+        address _owner,
+        string _name,
+        string _website,
+        uint256 _creditNum
+        )
+        onlyOwner 
+        external
+        returns(uint256)
+    {
+        uint256 _credit = _creditNum*10**18;
+        return _createGame(_owner, _name, _website, _credit);
+    }
+
+    /**
+     * Setting up the basic information of intelligent contract and credit limit.
+     */
+    function setupGame(
+        uint256 _gameId,
+        string _name,
+        string _website,
+        uint256 _creditNum,
+        bool _available
+        )
+        onlyOwner
+        whenGameExist(_gameId)
+        external
+    {
+        
+        uint256 _credit = _creditNum*10**18;
+        
+        Game storage _game = games[_gameId];
+        
+        // if(_owner != address(0)){
+        //     _game.owner = _owner;
+        //     gameIndexToOwner[_gameId] = _owner;
+        //     gameIndexToNextOwner[_gameId] = _owner;
+        // }
+        
+        if(bytes(_name).length > 0){
+            _game.name = _name;
+        }
+
+        if(bytes(_website).length > 0){
+            _game.website = _website;
+        }
+
+        _game.lineOfCredit = _credit;
+        _game.isAavailable = _available;
+    }
+
+    /**
+     * Internal purchase, only can be called by this contract
+     */
+    function _purchase(address _player, uint256 _diamond) internal {
+        
+        // Calculate how many diamonds players can buy in their own currency.
+        uint256 _diamondValue = msg.value * RATE_ETH_DIAMOND;
+        
+        require(_diamondValue == _diamond, "The input value and amount of purchase is not meet.");
+        
+        // Check if overflows
+        require(totalSupply + _diamond > totalSupply);
+        require(playerSupply + _diamond > playerSupply);
+        require(balanceOf[_player] + _diamond > balanceOf[_player]);
+        
+        // Issue diamonds
+        totalSupply += _diamond;
+        playerSupply += _diamond;
+        balanceOf[_player] += _diamond;
+        
+        // Record Purchase in logs.
+        emit Purchase(msg.sender, _diamond);
+
+    }
+
+    /**
+     * By purchasing a certain amount of diamonds in local currency, the amount of diamonds that can be purchased in one local currency is determined by DIAMOND_RATE.
+     * The number of incoming non-digit, streamlined, maximum units, one diamond = 1, one gold coin = 1.
+     */
+    function purchase(uint256 _diamondNum) external payable {
+        
+        uint256 _diamond = _diamondNum*10**18;
+        
+        require(_diamond > 0, "The amont of purchase cann't be zero.");
+        
+        _purchase(msg.sender,_diamond);
+    }
+
+    /**
+     * Internal exchange, only can be called by this contract
+     */
+    function _exchange(uint256 _gameId, address _player, uint256 _diamond, uint256 _gold) internal whenGameAvailable(_gameId) meetDiamondGod(_diamond,_gold) {
+        
+        // Check if the sender has enough
+        require(balanceOf[_player] >= _diamond, "The balance of player is not enough.");
+
+        Game storage _game = games[_gameId];
+        
+        // Check for overflows
+        require(_game.totalDiamond + _diamond > _game.totalDiamond);
+        require(_game.playerDiamond + _diamond > _game.playerDiamond);
+        require(_game.totalGold + _gold > _game.totalGold);
+        require(_game.playerGold + _gold > _game.playerGold);
+        require(_game.balanceOf[_player] + _gold > _game.balanceOf[_player]);
+        
+        // Save this for an assertion in the future
+        uint256 previousBalances = balanceOf[_player]*RATE_DIAMOND_GOLD + _game.balanceOf[_player];
+        
+        // Subtract from the sender
+        balanceOf[_player] -= _diamond;
+        
+        // Add the same to the recipient
+        _game.totalDiamond += _diamond;
+        _game.playerDiamond += _diamond;
+        // Issue gold coins
+        _game.totalGold += _gold;
+        _game.playerGold += _gold;
+        _game.balanceOf[_player] += _gold;
+        
+        emit Exchange(_gameId, _player, _diamond, _gold);
+        
+        // Asserts are used to use static analysis to find bugs in your code. They should never fail
+        assert(balanceOf[_player]*RATE_DIAMOND_GOLD + _game.balanceOf[_player] == previousBalances);
+    }
+
+    /**
+     * Request to exchange a specified number of diamonds for a specified number of gold coins in the designated game platform. 
+     * The conversion rate of diamonds for gold coins is calculated according to GOLD_RATE.
+     * The number of incoming non-digit, streamlined, maximum units, one diamond = 1, one gold coin = 1.
+     */
+    function exchange(uint256 _gameId, uint256 _diamondNum, uint256 _goldNum) external whenGameExist(_gameId) {
+        
+        uint256 _diamond = _diamondNum*10**18;
+        uint256 _gold = _goldNum*10**18;
+        
+        require(_diamond > 0 && _gold > 0, "Exchange amount cann't be zero");
+        
+        _exchange(_gameId, msg.sender, _diamond, _gold);
+    }
+    
+    /**
+     * Internal settle, only can be called by this contract.
+     * This method mainly includes settling accounts and fulfilling exchange requests from gold coins to diamonds.
+     * Calling this method may lead to the destruction of gold coins in the game (from gold coins to diamonds).
+     * Calling this method may require enough spare gold coins, especially when the player wins the gold coin.
+     */
+    function _settle(uint256 _gameId, address _player, uint256 _balance, uint256 _diamond, uint256 _gold) internal whenGameExist(_gameId) {
+
+        Game storage _game = games[_gameId];
+        
+        bool _increased = false;
+        uint _change = 0;
+        if(_balance > _game.balanceOf[_player]){
+            _change = _balance - _game.balanceOf[_player];
+            _increased = true;
+        }else if(_balance < _game.balanceOf[_player]) {
+            _change = _game.balanceOf[_player] - _balance;
+        }
+        
+        //Settle
+        if(_change != 0){
+            if(_increased){
+                // Transfer gold from the reserve to the player temporarily.
+                require(_game.goldFund >= _change, "The fund is not enough.");
+                _game.goldFund -= _change;
+                require(_game.playerGold + _change > _game.playerGold, "Overflows exception.");
+                _game.playerGold += _change;
+            }else{
+                // Players lost gold coins temporarily increased to the reserve.
+                // Check for overflows
+                require(_game.goldFund + _change >= _game.goldFund, "Overflows exception.");
+                _game.goldFund += _change;
+                require(_game.playerGold > _change, "The plaer gold amount is not inconsistency");
+                _game.playerGold -= _change;
+            }
+        
+            _game.balanceOf[_player] = _balance;
+            
+            assert(_game.playerGold + _game.goldFund == _game.totalGold);
+        }
+
+        //ReExchange
+        if(_gold > 0 && _diamond > 0){
+            
+            require(_diamond * RATE_DIAMOND_GOLD == _gold, "Then balance of diamond and gold is not meet.");
+            require(_gold % SETTLE_GOLD_MIN == 0 && _gold < SETTLE_GOLD_MAX, "The amount to be settle is too small or too large");
+            
+            uint256 _fee4house = _gold * HOUSE_EDGE_PERCENT / 100;
+            uint256 _fee4game = _gold * GAME_EDGE_PERCENT / 100;
+            _fee4house = _fee4house < HOUSE_EDGE_MIN_AMOUNT ? HOUSE_EDGE_MIN_AMOUNT : _fee4house;
+            _fee4game = _fee4game < GAME_EDGE_MIN_AMOUNT ? GAME_EDGE_MIN_AMOUNT : _fee4game;
+            //uint _fee = _fee4house + _fee4game;
+            
+            uint256 _fee4houseDiamond = _fee4house / RATE_DIAMOND_GOLD;
+            uint256 _fee4gameDiamond = _fee4game / RATE_DIAMOND_GOLD;
+            
+            // Add house fee and game fee
+            require(_balance > _gold + _fee4house + _fee4game,"The account balance is not enough.");
+            // Players can't win the reserve money, at most they can only exchange the sum of gold coins that all players have exchanged, 
+            // that is, the sum of diamonds that players have exchanged.
+            require(_game.totalDiamond > _diamond + _fee4houseDiamond + _fee4gameDiamond,"Game.TotalDiamond amount is not inconsistency");
+            require(_game.playerDiamond > _diamond + _fee4houseDiamond + _fee4gameDiamond,"Game.PlayerDiamond amount is not inconsistency");
+            // When converting, we should also pay attention to guaranteeing the handling fee.
+            require(_game.totalGold > _gold + _fee4house + _fee4game, "Game.TotalGold amount is not inconsistency");
+            require(_game.playerGold > _gold + _fee4house + _fee4game, "Game.PlayerGold amount is not inconsistency");
+            
+            // Check Overflows
+            // require(balanceOf[_player] + _diamond > balanceOf[_player], "Overflows exception");
+            // require(balanceOf[owner] + _fee4houseDiamond > balanceOf[owner], "Overflows exception");
+            // require(balanceOf[_game.owner] + _fee4gameDiamond > balanceOf[_game.owner], "Overflows exception");
+            
+            //uint previousBalances = _game.playerDiamond + balanceOf[_player];
+
+             _balance -= (_gold + _fee4house + _fee4game);
+             _game.balanceOf[_player] = _balance;
+            
+            _game.totalDiamond -= (_diamond + _fee4houseDiamond + _fee4gameDiamond);
+            _game.playerDiamond -= (_diamond + _fee4houseDiamond + _fee4gameDiamond);
+            // send fee to contract and game owner
+            //_game.playerFee += _fee4house + _fee4game;
+            // Destroy gold coins issued by gamers
+            _game.totalGold -= (_gold + _fee4house + _fee4game);
+            _game.playerGold -= (_gold + _fee4house + _fee4game);
+            
+            // Add the same to the player
+            balanceOf[_player] += _diamond;
+            // Add the same fee to the contract owner and game owner
+            balanceOf[owner] += _fee4houseDiamond;
+            balanceOf[_game.owner] += _fee4gameDiamond;
+            
+            //assert(_game.playerDiamond + balanceOf[_player] == previousBalances);
+            
+        }else{
+            // Errors in parameters can also be ignored
+            _gold = 0;
+            _diamond = 0;
+        }
+        
+        int _changeAmout = _increased?int(_change):-int(_change);
+
+        emit Settle(_gameId, _player, _balance, _changeAmout, _diamond, _gold, _fee4house + _fee4game);
+   }
+    
+    /**
+     * Settle and Change from gold to diamond.
+     * There will be not happen to change if the _gold or _diamond is equals zero.
+     * This method is focus to check if the paramter is correct.
+     * The number of incoming non-digit, streamlined, maximum units, one diamond = 1, one gold coin = 1.
+     * This method can only be invoked if the game has an administrator address account.
+     */
+    function settle(uint _gameId, address _player, uint256 _balanceNum, uint256 _diamondNum, uint256 _goldNum) 
+        external 
+        onlyGameOwner(_gameId) 
+        meetDiamondGod(_diamond,_gold) 
+        whenGameStartup(_gameId){
+        
+        uint256 _balance = _balanceNum*10**18;
+        uint256 _diamond = _diamondNum*10**18; 
+        uint256 _gold = _goldNum*10**18;
+        
+        require(_gold % SETTLE_GOLD_MIN == 0 && _gold < SETTLE_GOLD_MAX, "The amount to be settle is too small or too large");
+        
+        require(_balance > _gold, "The account balance is not enough. ");
+        
+        _settle(_gameId, _player, _balance, _diamond, _gold);
+    }
+    
+    /**
+     * In order to facilitate settlement, it provides the function of batch settlement of players'accounts, 
+     * thereby reducing the large amount of reserve requirements that may be caused by uneven accounts.
+     * The number of incoming non-digit, streamlined, maximum units, one diamond = 1, one gold coin = 1.
+     */
+    function settle(uint _gameId, address[] _players, uint[] _balancesNum) external onlyGameOwner(_gameId) whenGameStartup(_gameId) {
+        
+        require(_players.length == _balancesNum.length, "The length of array of players and balaces is not equal.");
+        
+        //Support array length maximum is less than 256
+        for(uint i=0;i<_players.length;i++)
+            _settle(_gameId, _players[i], _balancesNum[i]*10**18, 0, 0);
+    }
+    
+    /**
+     * Internal withdraw, only can be called by this contract
+     */
+    function _withdraw(address _player, uint256 _diamond) private {
+        
+        // Check if the sender has enough
+        require(balanceOf[msg.sender] >= _diamond,"The balance of sender is not enough.");
+        // Cash cannot exceed the total diamond circulation
+        require(totalSupply >= _diamond, "Overspend exception");
+        require(playerSupply >= _diamond, "Overspend exception");
+        
+        // Subtract from the sender
+        balanceOf[msg.sender] -= _diamond;
+        // Burn the diamond from contract
+        totalSupply -= _diamond;
+        playerSupply -= _diamond;
+        
+        uint _value = _diamond / RATE_ETH_DIAMOND;
+        
+        require(_player.send(_value));
+        
+        emit Withdraw(_player, _diamond);
+        emit Send(_player, _value);
+        
+    }
+    
+    /**
+     * Players propose to convert their own diamond/token into coin, which is equivalent to raising coin. 
+     * The conversion rate between local currency and diamond is determined by DIAMON_RATE.
+     * The number of incoming non-digit, streamlined, maximum units, one diamond = 1, one gold coin = 1.
+     */
+    function withdraw(uint256 _diamondNum) external {
+        
+        uint256 _diamond = _diamondNum*10**18;
+        
+        require(_diamond > 0, "Amount of witwithdraw need big than zero.");
+        
+        _withdraw(msg.sender,_diamond);
+    }
+    
+    /**
+     * Internal charge, only can be called by this contract
+     */
+    function _charge(uint256 _gameId, uint256 _diamond, uint256 _gold) internal whenGameExist(_gameId) meetDiamondGod(_diamond,_gold) {
+
+        uint _diamondValue = msg.value*RATE_ETH_DIAMOND;
+        //uint _goldValue = _diamondValue*RATE_DIAMOND_GOLD;
+        
+        require(_diamondValue == _diamond, "The input value and amount of charge is not meet.");
+        
+        Game storage _game = games[_gameId];
+        
+        // Check for overflows
+        require(totalSupply + _diamond > totalSupply, "Overflows exception");
+        require(gameSupply + _diamond > gameSupply, "Overflows exception");
+        require(_game.totalDiamond + _diamond > _game.totalDiamond, "Overflows exception");
+        require(_game.diamondFund + _diamond > _game.diamondFund, "Overflows exception");
+        require(_game.totalGold + _gold > _game.totalGold, "Overflows exception");
+        require(_game.goldFund + _gold > _game.goldFund, "Overflows exception");
+        
+        // The contract issues diamonds for game managers to recharge spare gold coins.
+        // Gold coins and diamonds recharged by game administrators are included in the total number of diamonds issued under the contract.
+        totalSupply += _diamond;
+        gameSupply += _diamond;
+        _game.totalDiamond += _diamond;
+        _game.diamondFund += _diamond;
+        // Issue gold coins
+        _game.totalGold += _gold;
+        _game.goldFund += _gold;
+
+        emit Charge(_gameId, _diamond, _gold);
+        
+        assert(_game.totalDiamond == _game.diamondFund + _game.playerDiamond);
+        assert(_game.totalGold == _game.goldFund + _game.playerGold);
+    }
+    
+    /**
+     * Send the main coin to the designated game ID, fill the gold coin as the reserve, record how many diamonds are filled, and convert it into the reserve gold coin.
+     * Only the game owner can execute this method.
+     * The number of incoming non-digit, streamlined, maximum units, one diamond = 1, one gold coin = 1.
+     */
+    function charge(uint256 _gameId, uint256 _diamondNum, uint256 _goldNum) external payable onlyGameOwner(_gameId) meetDiamondGod(_diamondNum,_goldNum) {
+        
+        uint256 _diamond = _diamondNum*10**18; 
+        uint256 _gold = _goldNum*10**18;
+
+        _charge(_gameId,_diamond,_gold);
+    }
+
+    /**
+     * Internal refund, only can be called by this contract
+     */
+    function _refund(uint256 _gameId, uint256 _diamond, uint256 _gold) private whenGameExist(_gameId) meetDiamondGod(_diamond,_gold) {
+        
+        Game storage _game = games[_gameId];
+        
+        require(_game.diamondFund - _diamond >= _game.lineOfCredit, "The diamondFund cann't less than lineOfCredit.");
+    
+        // Check for overspend
+        require(totalSupply > _diamond && gameSupply > _diamond, "Overspend eexception.");
+        require(_game.totalDiamond > _diamond && _game.totalGold > _gold, "Overspend eexception.");
+        require(_game.diamondFund > _diamond && _game.goldFund > _gold, "The diamondFund or goldFund is not enough.");
+        
+        // Contract destruction issues diamonds for game managers to recharge spare gold coins.
+        totalSupply -= _diamond;
+        gameSupply -= _diamond;
+
+        _game.totalDiamond -= _diamond;
+        _game.diamondFund -= _diamond;
+        
+        // Destroy issued gold coins
+        _game.totalGold -= _gold;
+        _game.goldFund -= _gold;
+        
+        uint _value = _diamond / RATE_ETH_DIAMOND;
+        
+        require(address(this).balance > _value, "Contract account balace is not enough.");
+        require(msg.sender.send(_value), "Transfer value is failure.");
+        
+        emit Refund(_gameId, _diamond, _gold);
+        emit Send(msg.sender, _value);
+        
+        assert(totalSupply ==  gameSupply + playerSupply);
+        assert(_game.totalDiamond == _game.diamondFund + _game.playerDiamond);
+        assert(_game.totalGold == _game.goldFund + _game.playerGold);
+        
+    }
+    
+    /** 
+     * Specify the game ID to withdraw the reserve money, extract the designated gold coins, 
+     * and the number of diamonds converted, and finally return the corresponding main currency to the account.
+     * Only the game owner can execute this method.
+     * The number of incoming non-digit, streamlined, maximum units, one diamond = 1, one gold coin = 1.
+     */
+    function refund(uint256 _gameId, uint256 _diamondNum, uint256 _goldNum) external onlyGameOwner(_gameId) meetDiamondGod(_diamondNum,_goldNum) {
+        
+        uint256 _diamond = _diamondNum*10**18; 
+        uint256 _gold = _goldNum*10**18;
+
+        _refund(_gameId,_diamond,_gold);
+    }
+
+    /**
+     * Contract may be destroyed only when there are no ongoing diamond,
+     * either settled or refunded. All funds are transferred to contract owner.
+     */
+    function kill() external onlyOwner {
+        require (totalSupply == 0, "All diamond should be processed (settled or refunded) before self-destruct.");
+        emit Send(owner, address(this).balance);
+        selfdestruct(owner);
+    }
+
+}
+
+
